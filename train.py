@@ -55,17 +55,17 @@ n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
-learning_rate = 6e-4 # max learning rate
+learning_rate = 2.4e-3 # max learning rate
 max_iters = 600000 # total number of training iterations
-weight_decay = 1e-1
+weight_decay = 1e-2
 beta1 = 0.9
-beta2 = 0.95
-grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
+beta2 = 0.98
+grad_clip = 0.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
-warmup_iters = 2000 # how many steps to warm up for
+warmup_iters = 750 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
-min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+min_lr = 2.4e-4 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
@@ -103,6 +103,7 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
+    loss_outfile = open(f"{out_dir}/loss.csv", "w")
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -249,6 +250,8 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+if master_process:
+    torch.save(raw_model.state_dict(), os.path.join(out_dir, 'initial_weights.pt'))
 while True:
 
     # determine and set the learning rate for this iteration
@@ -296,6 +299,7 @@ while True:
         with ctx:
             logits, loss = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+            if master_process: loss_outfile.write(f"{loss}\n")
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
         # backward pass, with gradient scaling if training in fp16
