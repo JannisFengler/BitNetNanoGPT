@@ -1,5 +1,8 @@
 
-# nanoGPT
+# BitNetNanoGPT
+
+An implementation of BitNet: https://huggingface.co/papers/2310.11453
+Just working on only one GPU right now
 
 ![nanoGPT](assets/nanogpt.jpg)
 
