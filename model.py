@@ -15,6 +15,62 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from torch.autograd import Function
+
+# Straight-through estimator with scaling factor beta
+class StraightThrough(Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, beta: float) -> torch.Tensor:
+        return x.sign() * beta
+    
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+        return grad_output, None  # Bypass gradient
+
+def quantize_activation(x: torch.Tensor, b: int = 8, eps: float = 1e-5) -> torch.Tensor:
+    """Quantize the activation using absmax and Clip function."""
+    q_b = 2 ** b - 1
+    gamma = torch.max(torch.abs(x))
+    x_q = torch.clamp(x * q_b / gamma, -q_b + eps, q_b - eps)
+    return x_q
+
+class BitLinear(nn.Module):
+    """Implementation of BitLinear Layer."""
+    def __init__(self, in_features: int, out_features: int) -> None:
+        super(BitLinear, self).__init__()
+        self.latent_weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        self.bias = nn.Parameter(torch.Tensor(out_features))
+        self.reset_parameters()
+    
+    def reset_parameters(self) -> None:
+        """Initialize the parameters."""
+        nn.init.kaiming_uniform_(self.latent_weight, a=math.sqrt(5))
+        fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.latent_weight)
+        bound = 1 / math.sqrt(fan_in)
+        nn.init.uniform_(self.bias, -bound, bound)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass for BitLinear."""
+        # Make the weights zero-mean
+        alpha = torch.mean(self.latent_weight)
+        zero_mean_weight = self.latent_weight - alpha
+        
+        # Calculate scaling factor beta
+        beta = torch.norm(zero_mean_weight, 1) / zero_mean_weight.numel()
+        
+        # Binarize weight using zero-mean latent weight and scaling factor beta
+        w_b = StraightThrough.apply(zero_mean_weight, beta)
+        
+        # Layer Normalization before activation quantization
+        x = F.layer_norm(x, x.size()[1:])
+        
+        # Quantize activation
+        x_q = quantize_activation(x)
+        
+        # BitLinear Operation
+        out = F.linear(x_q, w_b, self.bias)
+        return out
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -32,9 +88,9 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        self.c_attn = BitLinear(config.n_embd, 3 * config.n_embd)
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj = BitLinear(config.n_embd, config.n_embd)
         # regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
@@ -79,9 +135,9 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_fc    = BitLinear(config.n_embd, 4 * config.n_embd)
         self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj  = BitLinear(4 * config.n_embd, config.n_embd)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -92,18 +148,16 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(x)
+        x = x + self.mlp(x)
         return x
+
 
 @dataclass
 class GPTConfig:
@@ -113,7 +167,7 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
     dropout: float = 0.0
-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
 class GPT(nn.Module):
 
@@ -130,19 +184,9 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        # with weight tying when using torch.compile() some warnings get generated:
-        # "UserWarning: functional_call was passed multiple values for tied weights.
-        # This behavior is deprecated and will be an error in future versions"
-        # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        self.lm_head = BitLinear(config.n_embd, config.vocab_size)
 
-        # init all weights
         self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
-        for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
@@ -166,6 +210,11 @@ class GPT(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, BitLinear):  # added this
+            torch.nn.init.normal_(module.latent_weight, mean=0.0, std=0.02)  # changed to latent_weight
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+
 
     def forward(self, idx, targets=None):
         device = idx.device
