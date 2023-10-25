@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "bitnetnanogpt"
+version = "0.1.0"
+description = "An Implementation of BitNet"
+authors = ["Jannis Fengler <20631393+JannisFengler@users.noreply.github.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = "^2.1.0"
+triton = "^2.1.0"
+datasets = "^2.14.5"
+matplotlib = "^3.8.0"
+tensorboard = "^2.14.1"
+wandb = "^0.15.12"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
