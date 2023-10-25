@@ -15,6 +15,7 @@ matplotlib = "^3.8.0"
 tensorboard = "^2.14.1"
 wandb = "^0.15.12"
 tqdm = "^4.66.1"
+tiktoken = "^0.5.1"
 
 
 [build-system]
