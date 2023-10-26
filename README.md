@@ -2,8 +2,11 @@
 # BitNetNanoGPT
 
 An implementation of BitNet: https://huggingface.co/papers/2310.11453
-Just working on only one GPU right now
-run ``` python train.py config/train_gpt2.py ```
+Just working on one GPU 
+run 
+``` 
+python train.py config/train_gpt2.py 
+```
 
 ![nanoGPT](assets/nanogpt.jpg)
 
