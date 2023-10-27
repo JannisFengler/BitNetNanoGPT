@@ -40,7 +40,7 @@ train_data = data[:int(n*0.9)]
 val_data = data[int(n*0.9):]
 
 # encode both to integers
-train_ids = encode(train_data)
+train_ids = [0] + encode(train_data)
 val_ids = encode(val_data)
 print(f"train has {len(train_ids):,} tokens")
 print(f"val has {len(val_ids):,} tokens")
@@ -59,6 +59,8 @@ meta = {
 }
 with open(os.path.join(os.path.dirname(__file__), 'meta.pkl'), 'wb') as f:
     pickle.dump(meta, f)
+
+print("Written to", os.path.dirname(__file__))
 
 # length of dataset in characters:  1115394
 # all the unique characters:
